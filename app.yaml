@@ -1,0 +1,20 @@
+runtime: nodejs18
+env: standard
+instance_class: F1
+
+automatic_scaling:
+  target_cpu_utilization: 0.65
+  min_instances: 1
+  max_instances: 1
+  min_idle_instances: 1
+  max_idle_instances: 1
+  target_throughput_utilization: 0.6
+
+env_variables:
+  DISCORD_TOKEN: "YOUR_DISCORD_TOKEN"
+  GOOGLE_SERVICE_ACCOUNT_EMAIL: "YOUR_EMAIL"
+  GOOGLE_PRIVATE_KEY: "YOUR_PRIVATE_KEY"
+  GEMINI_API_KEY: "YOUR_GEMINI_KEY"
+
+inbound_services:
+- warmup
