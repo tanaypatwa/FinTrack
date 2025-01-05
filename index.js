@@ -1,23 +1,94 @@
-const express = require('express');
-const app = express();
-const port = process.env.PORT || 8080;
-
-// Add this basic HTTP server
-app.get('/', (req, res) => {
-  res.send('Bot is running!');
-});
-
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
-});
-
-process.env.NODE_OPTIONS = '--openssl-legacy-provider';
 const Discord = require('discord.js');
-const { GoogleSpreadsheet } = require('google-spreadsheet');
 require('dotenv').config();
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleSpreadsheet } = require('google-spreadsheet');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const port = process.env.PORT || 8080;
+const schedule = require('node-schedule');
 
-let doc;
+let isBotReady = false;
+
+// Wrapper function for sheet operations
+async function performSheetOperation(operation) {
+    try {
+        await initializeSheets();
+        return await operation();
+    } catch (error) {
+        console.error('Sheet operation error:', error);
+        throw error;
+    }
+}
+
+// Initialize Discord client with required intents
+const { Client, GatewayIntentBits } = require('discord.js');
+
+const client = new Discord.Client({
+    intents: [
+        Discord.Intents.FLAGS.GUILDS,
+        Discord.Intents.FLAGS.GUILD_MESSAGES,
+        Discord.Intents.FLAGS.GUILD_MESSAGE_REACTIONS
+    ]
+});
+
+// Initialize Gemini
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+// Initialize bot and sheets
+async function initializeBot() {
+    try {
+        logBot('INFO', 'Starting bot initialization');
+        await setupGoogleSheet();
+        await client.login(process.env.DISCORD_TOKEN);
+        logBot('SUCCESS', 'Bot initialized successfully');
+    } catch (error) {
+        logBot('ERROR', 'Bot initialization failed', error);
+        process.exit(1);
+    }
+}
+
+// Start the bot
+initializeBot();
+
+
+// Get or create current month's sheet
+async function getCurrentMonthSheet() {
+    try {
+        const date = new Date();
+        const sheetTitle = `${date.toLocaleString('default', { month: 'long' })} ${date.getFullYear()}`;
+        
+        console.log('Attempting to access sheet:', sheetTitle);
+        
+        // Ensure doc is initialized
+        if (!doc) {
+            console.log('Doc not initialized, initializing...');
+            await initializeSheets();
+        }
+        
+        let sheet = doc.sheetsByTitle[sheetTitle];
+        console.log('Found sheet:', sheet ? 'Yes' : 'No');
+        
+        if (!sheet) {
+            console.log('Creating new sheet...');
+            sheet = await doc.addSheet({ 
+                title: sheetTitle,
+                headerValues: ['Date', 'Type', 'Amount', 'Description', 'Category', 'PaymentMode']
+            });
+            console.log('New sheet created');
+        }
+        
+        return sheet;   
+    } catch (error) {
+        console.error('Error in getCurrentMonthSheet:', error);
+        throw error;
+    }
+}
+
+// Set up scheduled tasks
+client.once('ready', async () => {
+    console.log(`Logged in as ${client.user.tag}!`);
+    await setupGoogleSheet();
+    logBot('INFO', 'Bot is online and sheets are ready!');
+});
 
 // Add these constants at the top of your file
 const CATEGORIES = {
@@ -68,23 +139,21 @@ const LOG_LEVELS = {
     WARN: '⚠️'
 };
 
-function logBot(level, message, data = null) {
+// Enhanced logging function
+function logBot(type, message, data = null) {
     const timestamp = new Date().toISOString();
-    const logMessage = `${timestamp} ${LOG_LEVELS[level]} ${message}`;
-    console.log(logMessage);
+    const icon = {
+        'INFO': 'ℹ️',
+        'SUCCESS': '✅',
+        'ERROR': '❌',
+        'WARNING': '⚠️'
+    }[type] || '📝';
+
+    console.log(`${timestamp} ${icon} ${message}`);
     if (data) {
-        console.log('Additional data:', data);
+        console.log('Additional data:', JSON.stringify(data, null, 2));
     }
 }
-
-// Update the client configuration to use Discord.js v13 Intents
-const client = new Discord.Client({
-    intents: [
-        Discord.Intents.FLAGS.GUILDS,
-        Discord.Intents.FLAGS.GUILD_MESSAGES,
-        Discord.Intents.FLAGS.GUILD_MESSAGE_REACTIONS
-    ]
-});
 
 // Initialize Google Sheets connection
 async function setupGoogleSheet() {
@@ -113,17 +182,6 @@ async function setupGoogleSheet() {
         return false;
     }
 }
-
-// Initialize Gemini
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-
-// Call this when the bot starts
-client.on('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}!`);
-    await setupGoogleSheet();
-    logBot('INFO', 'Bot is online and sheets are ready!');
-});
 
 // Function to use Gemini to categorize transaction
 async function categorizeTransaction(description) {
@@ -302,7 +360,7 @@ async function analyzeSpendingQuery(query, transactions) {
     }
 }
 
-// Constants for sheet columns
+// Define standard column names
 const SHEET_COLUMNS = {
     DATE: 'Date',
     TRANSACTION_TYPE: 'Type',  // 'EXPENSE' or 'INCOME'
@@ -311,6 +369,19 @@ const SHEET_COLUMNS = {
     CATEGORY: 'Category',
     PAYMENT_MODE: 'PaymentMode'
 };
+
+// Use these in both income and expense logging
+async function logTransaction(type, amount, description, category, paymentMode) {
+    const sheet = await getCurrentMonthSheet();
+    await sheet.addRow({
+        [SHEET_COLUMNS.DATE]: new Date().toLocaleDateString('en-GB'),
+        [SHEET_COLUMNS.TRANSACTION_TYPE]: type,
+        [SHEET_COLUMNS.AMOUNT]: type === 'EXPENSE' ? -Math.abs(amount) : Math.abs(amount),
+        [SHEET_COLUMNS.DESCRIPTION]: description,
+        [SHEET_COLUMNS.CATEGORY]: category,
+        [SHEET_COLUMNS.PAYMENT_MODE]: paymentMode || 'N/A'
+    });
+}
 
 // Function to create new monthly sheet with standardized columns
 async function createMonthlySheet() {
@@ -337,19 +408,27 @@ async function createMonthlySheet() {
     }
 }
 
-// Function to log expense transaction
+// Function to log expense with better error handling
 async function logExpense(amount, description, category, paymentMode) {
     try {
+        // Validate amount
+        const parsedAmount = parseFloat(amount);
+        if (isNaN(parsedAmount)) {
+            throw new Error('Invalid amount provided');
+        }
+
         const sheet = await getCurrentMonthSheet();
         await sheet.addRow({
             [SHEET_COLUMNS.DATE]: new Date().toLocaleDateString('en-GB'),
             [SHEET_COLUMNS.TRANSACTION_TYPE]: 'EXPENSE',
-            [SHEET_COLUMNS.AMOUNT]: `-${Math.abs(amount)}`,  // Ensure negative for expenses
-            [SHEET_COLUMNS.DESCRIPTION]: description,
-            [SHEET_COLUMNS.CATEGORY]: category,
-            [SHEET_COLUMNS.PAYMENT_MODE]: paymentMode
+            [SHEET_COLUMNS.AMOUNT]: `-${Math.abs(parsedAmount)}`,  // Ensure negative for expenses
+            [SHEET_COLUMNS.DESCRIPTION]: description || 'No description',
+            [SHEET_COLUMNS.CATEGORY]: category || 'Uncategorized',
+            [SHEET_COLUMNS.PAYMENT_MODE]: paymentMode || 'Cash'
         });
-        logBot('SUCCESS', 'Expense logged successfully');
+        
+        logBot('SUCCESS', `Expense logged: ₹${parsedAmount} - ${description}`);
+        return true;
     } catch (error) {
         logBot('ERROR', 'Error logging expense', error);
         throw error;
@@ -366,7 +445,7 @@ async function logIncome(amount, category, description) {
             [SHEET_COLUMNS.AMOUNT]: Math.abs(amount),  // Ensure positive for income
             [SHEET_COLUMNS.DESCRIPTION]: description,
             [SHEET_COLUMNS.CATEGORY]: category,
-            [SHEET_COLUMNS.PAYMENT_MODE]: 'N/A'
+            [SHEET_COLUMNS.PAYMENT_MODE]: 'N/A'  // Default for income
         });
         logBot('SUCCESS', 'Income logged successfully');
     } catch (error) {
@@ -378,37 +457,37 @@ async function logIncome(amount, category, description) {
 // Function to generate summary report
 async function generateSummaryReport() {
     try {
-        logBot('INFO', 'Starting summary report generation');
+        logBot('INFO', 'Generating summary report');
         const sheet = await getCurrentMonthSheet();
         const rows = await sheet.getRows();
-        
-        logBot('INFO', `Retrieved ${rows.length} transactions`);
-        
+
+        // Debug log to check data
+        console.log('Retrieved rows:', rows.length);
+
         // Initialize totals
         let totalIncome = 0;
         let totalExpenses = 0;
-        const categoryTotals = {};
-        
-        // Initialize all categories to 0
-        Object.values(CATEGORIES).forEach(category => {
-            categoryTotals[category] = 0;
-        });
+        let categoryTotals = {};
 
-        // Process each transaction
-        rows.forEach(row => {
-            const amount = Math.abs(parseFloat(row.Amount) || 0);
-            
+        // Process each row
+        for (const row of rows) {
+            const amount = parseFloat(row.Amount) || 0;
+            console.log('Processing row:', {
+                type: row.Type,
+                amount: amount,
+                category: row.Category
+            });
+
             if (row.Type === 'INCOME') {
-                totalIncome += amount;
+                totalIncome += Math.abs(amount);
             } else {
-                totalExpenses += amount;
-                if (row.Category in categoryTotals) {
-                    categoryTotals[row.Category] += amount;
+                totalExpenses += Math.abs(amount);
+                // Accumulate category totals
+                if (row.Category) {
+                    categoryTotals[row.Category] = (categoryTotals[row.Category] || 0) + Math.abs(amount);
                 }
             }
-        });
-
-        logBot('INFO', 'Calculated totals', { income: totalIncome, expenses: totalExpenses });
+        }
 
         // Create embed
         const embed = new Discord.MessageEmbed()
@@ -421,24 +500,32 @@ async function generateSummaryReport() {
                 { name: '💫 Net Savings', value: `₹${(totalIncome - totalExpenses).toLocaleString()}`, inline: true }
             );
 
-        // Add category breakdowns
-        Object.entries(CATEGORIES).forEach(([key, category]) => {
+        // Add category breakdowns with error checking
+        for (const [key, category] of Object.entries(CATEGORIES)) {
             const spent = categoryTotals[category] || 0;
-            const budget = MONTHLY_BUDGETS[key];
-            const percentage = (spent / budget) * 100;
+            const budget = MONTHLY_BUDGETS[key] || 0;
+            const percentage = budget > 0 ? (spent / budget) * 100 : 0;
             
+            console.log('Category breakdown:', {
+                category: category,
+                spent: spent,
+                budget: budget,
+                percentage: percentage
+            });
+
             const progressBar = createProgressBar(percentage);
             embed.addField(
                 category,
                 `${progressBar} ${percentage.toFixed(1)}%\n₹${spent.toLocaleString()} / ₹${budget.toLocaleString()}`
             );
-        });
+        }
 
         logBot('SUCCESS', 'Generated summary report');
         return embed;
 
     } catch (error) {
         logBot('ERROR', 'Error generating summary report', error);
+        console.error('Detailed error:', error);
         throw error;
     }
 }
@@ -492,183 +579,225 @@ async function generateMonthlyReport() {
     }
 }
 
-// Update message handler
+// Updated message handler with better logging
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
-
-    logBot('INFO', `Received message: ${message.content}`);
-
+    
     try {
-        if (message.content.trim() === '!summary') {
-            logBot('INFO', 'Processing summary command');
-            const summaryEmbed = await generateSummaryReport();
-            await message.channel.send({ embeds: [summaryEmbed] });
-            logBot('SUCCESS', 'Sent summary report');
-        }
-        else if (message.content.trim() === '!report') {
-            logBot('INFO', 'Processing report command');
-            const report = await generateMonthlyReport();
-            await message.channel.send(report);
-            logBot('SUCCESS', 'Sent monthly report');
-        }
-        else if (message.content.startsWith('!log')) {
-            const content = message.content.slice(5).trim();
+        const content = message.content.trim();
+        logBot('INFO', 'Received message', { content });
+        
+        // Handle !log command (existing code)
+        if (content.startsWith('!log')) {
+            const expenseDetails = content.slice(4).trim();
+            logBot('INFO', 'Processing expense', { expenseDetails });
             
+            if (!expenseDetails) {
+                await message.reply('Please provide expense details.');
+                return;
+            }
+
+            // Parse with Gemini
             const parsePrompt = `
-            Parse this transaction: "${content}"
+            Parse this expense: "${expenseDetails}"
             Extract:
-            1. Amount (number in INR)
-            2. Description
-            3. Payment Mode (${Object.values(PAYMENT_MODES).join(', ')})
-            4. Category (${Object.values(CATEGORIES).join(', ')})
-            
+            1. Amount (number only)
+            2. Description (clear text)
+            3. Payment Mode (must be one of: Cash, UPI, Credit Card)
+            4. Category (must be one of: Food, Health/medical, Home expenses, Cabs/Petrol, Personal, Utilities, NSCI, Party & Leisure, Trip)
+
             Format response exactly as: amount|description|payment|category`;
 
-            const result = await model.generateContent(parsePrompt);
-            const [amount, description, payment, category] = result.response.text().trim().split('|');
+            try {
+                const result = await model.generateContent(parsePrompt);
+                const response = result.response.text().trim();
+                logBot('INFO', 'Gemini response', { response });
 
-            // Create confirmation embed
-            const confirmationEmbed = new Discord.MessageEmbed()
-                .setColor('#0099ff')
-                .setTitle('📝 New Expense - Please Confirm')
-                .addFields(
-                    { name: 'Amount', value: `₹${amount}` },
-                    { name: 'Description', value: description },
-                    { name: 'Category', value: category },
-                    { name: 'Payment Mode', value: payment }
-                )
-                .setFooter({ text: '✅ to confirm, ❌ to cancel, 📝 to edit' });
+                const [amount, description, paymentMode, category] = response.split('|');
+                logBot('INFO', 'Parsed result', { amount, description, paymentMode, category });
 
-            const confirmationMsg = await message.channel.send({ embeds: [confirmationEmbed] });
-            await confirmationMsg.react('✅');
-            await confirmationMsg.react('❌');
-            await confirmationMsg.react('📝');
+                if (!amount || !description || !paymentMode || !category) {
+                    throw new Error('Invalid response format from Gemini');
+                }
 
-            // Handle reaction
-            const filter = (reaction, user) => {
-                return ['✅', '❌', '📝'].includes(reaction.emoji.name) && user.id === message.author.id;
-            };
+                // Create embed
+                const embed = {
+                    color: 0x0099ff,
+                    title: '📝 New Expense - Please Confirm',
+                    fields: [
+                        { name: 'Amount', value: `₹${amount}`, inline: false },
+                        { name: 'Description', value: description, inline: false },
+                        { name: 'Category', value: category, inline: false },
+                        { name: 'Payment Mode', value: paymentMode, inline: false }
+                    ],
+                    footer: { text: '✅ to confirm, ❌ to cancel, 📝 to edit' }
+                };
 
-            const collected = await confirmationMsg.awaitReactions({ filter, max: 1, time: 60000 });
-            const reaction = collected.first();
+                // Send confirmation message
+                const confirmationMsg = await message.channel.send({ embeds: [embed] });
+                logBot('INFO', 'Sent confirmation message');
 
-            if (reaction.emoji.name === '✅') {
-                await logExpense(amount, description, category, payment);
-                await message.channel.send('✅ Expense logged successfully!');
-            } else if (reaction.emoji.name === '❌') {
-                await message.channel.send('❌ Transaction cancelled.');
-                logBot('INFO', 'Transaction cancelled by user');
+                // Add reactions
+                await confirmationMsg.react('✅');
+                await confirmationMsg.react('❌');
+                await confirmationMsg.react('📝');
+
+                // Set up reaction collector
+                const filter = (reaction, user) => 
+                    ['✅', '❌', '📝'].includes(reaction.emoji.name) && 
+                    user.id === message.author.id;
+
+                const collector = confirmationMsg.createReactionCollector({ 
+                    filter, 
+                    max: 1,
+                    time: 60000 
+                });
+
+                collector.on('collect', async (reaction, user) => {
+                    try {
+                        if (reaction.emoji.name === '✅') {
+                            const sheet = await getCurrentMonthSheet();
+                            await sheet.addRow({
+                                [SHEET_COLUMNS.DATE]: new Date().toLocaleDateString('en-GB'),
+                                [SHEET_COLUMNS.TRANSACTION_TYPE]: 'EXPENSE',
+                                [SHEET_COLUMNS.AMOUNT]: `-${Math.abs(parseFloat(amount))}`,
+                                [SHEET_COLUMNS.DESCRIPTION]: description,
+                                [SHEET_COLUMNS.CATEGORY]: category,
+                                [SHEET_COLUMNS.PAYMENT_MODE]: paymentMode
+                            });
+                            
+                            await message.channel.send('✅ Expense logged successfully!');
+                        } else if (reaction.emoji.name === '❌') {
+                            await message.channel.send('❌ Expense cancelled.');
+                        } else if (reaction.emoji.name === '📝') {
+                            await message.channel.send('Please enter the expense details again.');
+                        }
+                    } catch (error) {
+                        logBot('ERROR', 'Reaction handling error', error);
+                        await message.channel.send('Error processing your reaction. Please try again.');
+                    }
+                });
+
+            } catch (error) {
+                logBot('ERROR', 'Expense processing error', error);
+                await message.reply('Error processing expense. Please try again.');
             }
-        }
-        else if (message.content.startsWith('!income')) {
-            const content = message.content.slice(8).trim();
-            
-            const parsePrompt = `
-            Parse this income entry: "${content}"
-            Extract:
-            1. Amount (number in INR)
-            2. Category (${Object.values(INCOME_TYPES).join(', ')})
-            3. Description
-            
-            Format response exactly as: amount|category|description`;
-
-            const result = await model.generateContent(parsePrompt);
-            const [amount, category, description] = result.response.text().trim().split('|');
-
-            // Create confirmation embed for income
-            const confirmationEmbed = new Discord.MessageEmbed()
-                .setColor('#00ff00')
-                .setTitle('💰 New Income - Please Confirm')
-                .addFields(
-                    { name: 'Amount', value: `₹${amount}` },
-                    { name: 'Category', value: category },
-                    { name: 'Description', value: description }
-                )
-                .setFooter({ text: '✅ to confirm, ❌ to cancel, 📝 to edit' });
-
-            const confirmationMsg = await message.channel.send({ embeds: [confirmationEmbed] });
-            await confirmationMsg.react('✅');
-            await confirmationMsg.react('❌');
-            await confirmationMsg.react('📝');
-
-            // Handle reaction
-            const filter = (reaction, user) => {
-                return ['✅', '❌', '📝'].includes(reaction.emoji.name) && user.id === message.author.id;
-            };
-
-            const collected = await confirmationMsg.awaitReactions({ filter, max: 1, time: 60000 });
-            const reaction = collected.first();
-
-            if (reaction.emoji.name === '✅') {
-                await logIncome(amount, category, description);
-                await message.channel.send('✅ Income logged successfully!');
-            } else if (reaction.emoji.name === '❌') {
-                await message.channel.send('❌ Transaction cancelled.');
-                logBot('INFO', 'Transaction cancelled by user');
-            }
-        }
-        // Handle spending queries
-        else if (message.content.toLowerCase().includes('how much') || 
-                 message.content.toLowerCase().includes('spent')) {
-            logBot('INFO', 'Processing spending query');
-            // ... existing spending query code ...
         }
         
+        // Handle !income command
+        else if (content.startsWith('!income')) {
+            const incomeDetails = content.slice(7).trim();
+            logBot('INFO', 'Processing income', { incomeDetails });
+            
+            if (!incomeDetails) {
+                await message.reply('Please provide income details.');
+                return;
+            }
+
+            // Parse with Gemini
+            const parsePrompt = `
+            Parse this income: "${incomeDetails}"
+            Extract:
+            1. Amount (number only)
+            2. Description (clear text)
+            3. Category (must be one of: Salary, Freelance, Investments, Other)
+
+            Format response exactly as: amount|description|category`;
+
+            try {
+                const result = await model.generateContent(parsePrompt);
+                const response = result.response.text().trim();
+                logBot('INFO', 'Gemini response', { response });
+
+                const [amount, description, category] = response.split('|');
+                logBot('INFO', 'Parsed result', { amount, description, category });
+
+                if (!amount || !description || !category) {
+                    throw new Error('Invalid response format from Gemini');
+                }
+
+                // Log income to Google Sheet
+                const sheet = await getCurrentMonthSheet();
+                await sheet.addRow({
+                    [SHEET_COLUMNS.DATE]: new Date().toLocaleDateString('en-GB'),
+                    [SHEET_COLUMNS.TRANSACTION_TYPE]: 'INCOME',
+                    [SHEET_COLUMNS.AMOUNT]: Math.abs(parseFloat(amount)),
+                    [SHEET_COLUMNS.DESCRIPTION]: description,
+                    [SHEET_COLUMNS.CATEGORY]: category,
+                    [SHEET_COLUMNS.PAYMENT_MODE]: 'N/A'
+                });
+
+                await message.channel.send('✅ Income logged successfully!');
+            } catch (error) {
+                logBot('ERROR', 'Income processing error', error);
+                await message.reply('Error processing income. Please try again.');
+            }
+        }
+        
+        // Handle !summary command
+        else if (content === '!summary') {
+            logBot('INFO', 'Generating summary report');
+            const summaryEmbed = await generateSummaryReport();
+            await message.channel.send({ embeds: [summaryEmbed] });
+        }
+        
+        // Handle !report command
+        else if (content === '!report') {
+            logBot('INFO', 'Generating monthly report');
+            const report = await generateMonthlyReport();
+            await message.channel.send(report);
+        }
+        
+        // Handle spending queries
+        else if (content.toLowerCase().includes('spent') || 
+                 content.toLowerCase().includes('spending') || 
+                 content.toLowerCase().includes('how much')) {
+            logBot('INFO', 'Processing spending query');
+            const sheet = await getCurrentMonthSheet();
+            const rows = await sheet.getRows();
+            const analysis = await analyzeSpendingQuery(content, rows);
+            await message.channel.send(analysis);
+        }
+        
+        // Handle budget analysis
+        else if (content === '!budget') {
+            logBot('INFO', 'Analyzing budget');
+            const analysis = await analyzeBudget();
+            await message.channel.send(analysis);
+        }
+
     } catch (error) {
-        logBot('ERROR', 'Error processing message', error);
-        await message.channel.send(`Error: ${error.message}`);
+        logBot('ERROR', 'Message processing error', error);
+        await message.reply('An error occurred. Please try again.');
     }
 });
 
-// Function to calculate spending by payment mode
-async function getSpendingByPaymentMode(mode, days) {
-    try {
-        const sheet = doc.sheetsByTitle['Transactions'];
-        const rows = await sheet.getRows();
-        
-        const cutoffDate = new Date();
-        cutoffDate.setDate(cutoffDate.getDate() - days);
-        
-        let total = 0;
-        rows.forEach(row => {
-            const rowDate = parseDate(row.Date);
-            if (rowDate >= cutoffDate && 
-                row.PaymentMode.toLowerCase() === mode.toLowerCase()) {
-                total += parseFloat(row.Amount) || 0;
-            }
-        });
-        
-        return total;
-    } catch (error) {
-        console.error('Error calculating spending:', error);
-        throw error;
-    }
-}
+// Make sure Discord client is properly initialized
+client.once('ready', async () => {
+    logBot('INFO', `Logged in as ${client.user.tag}`);
+    await setupGoogleSheet();
+    logBot('INFO', 'Bot is online and sheets are ready!');
+});
 
-// Function to calculate spending by category
-async function getSpendingByCategory(category, days) {
-    try {
-        const sheet = doc.sheetsByTitle['Transactions'];
-        const rows = await sheet.getRows();
-        
-        const cutoffDate = new Date();
-        cutoffDate.setDate(cutoffDate.getDate() - days);
-        
-        let total = 0;
-        rows.forEach(row => {
-            const rowDate = parseDate(row.Date);
-            if (rowDate >= cutoffDate && 
-                row.Category.toLowerCase() === category.toLowerCase()) {
-                total += parseFloat(row.Amount) || 0;
-            }
-        });
-        
-        return total;
-    } catch (error) {
-        console.error('Error calculating category spending:', error);
-        throw error;
-    }
-}
+// Error handler for client
+client.on('error', error => {
+    logBot('ERROR', 'Discord client error', error);
+});
+
+// Debug handler
+client.on('debug', info => {
+    logBot('INFO', 'Discord debug', info);
+});
+
+// Debug logging for reactions
+client.on('messageReactionAdd', (reaction, user) => {
+    if (user.bot) return;
+    logBot('INFO', 'Reaction added', { 
+        emoji: reaction.emoji.name, 
+        user: user.tag,
+        messageId: reaction.message.id
+    });
+});
 
 // Helper function to parse date from DD/MM/YYYY format
 function parseDate(dateStr) {
@@ -762,35 +891,32 @@ async function handleTransaction(message, content) {
         await confirmationMsg.react('❌');
         await confirmationMsg.react('📝');
 
-        // Handle reaction
+        // Add reaction collector
         const filter = (reaction, user) => {
-            return ['✅', '❌', '📝'].includes(reaction.emoji.name) && user.id === message.author.id;
+            return ['✅', '❌', '📝'].includes(reaction.emoji.name) && 
+                   user.id === message.author.id;
         };
 
-        const collected = await confirmationMsg.awaitReactions({ filter, max: 1, time: 60000 });
-        const reaction = collected.first();
+        const collector = confirmationMsg.createReactionCollector({ 
+            filter, 
+            time: 60000,  // 60 seconds timeout
+            max: 1        // Only collect one reaction
+        });
 
-        if (reaction.emoji.name === '✅') {
-            // Make sure sheets are initialized before logging
-            const sheet = await getCurrentMonthSheet();
-            if (!sheet) {
-                throw new Error('Failed to access or create sheet');
+        collector.on('collect', async (reaction, user) => {
+            switch(reaction.emoji.name) {
+                case '✅':
+                    // Your confirmation code
+                    break;
+                case '❌':
+                    await message.channel.send('Transaction cancelled');
+                    break;
+                case '📝':
+                    await message.channel.send('Please enter the corrected details');
+                    // Add edit logic
+                    break;
             }
-            
-            // Log the transaction
-            await sheet.addRow({
-                Date: new Date().toLocaleDateString('en-GB'),
-                Type: 'EXPENSE',
-                Amount: `-${Math.abs(parseFloat(amount))}`,
-                Description: description.trim(),
-                Category: category.trim(),
-                PaymentMode: payment.trim()
-            });
-            
-            await message.channel.send('✅ Expense logged successfully!');
-        } else if (reaction.emoji.name === '❌') {
-            await message.channel.send('❌ Transaction cancelled.');
-        }
+        });
     } catch (error) {
         console.error('Transaction error:', error);
         await message.channel.send(`Error: ${error.message}`);
@@ -922,20 +1048,26 @@ async function generateMonthEndReport() {
 async function getCurrentMonthSheet() {
     try {
         const date = new Date();
-        const sheetTitle = `${date.toLocaleString('default', { month: 'long' })} ${date.getFullYear()} Transactions`;
+        const sheetTitle = `${date.toLocaleString('default', { month: 'long' })} ${date.getFullYear()}`;
         
-        // Check if doc is initialized
+        console.log('Attempting to access sheet:', sheetTitle);
+        
+        // Ensure doc is initialized
         if (!doc) {
-            await setupGoogleSheet();
+            console.log('Doc not initialized, initializing...');
+            await initializeSheets();
         }
         
-        // Try to get existing sheet
         let sheet = doc.sheetsByTitle[sheetTitle];
+        console.log('Found sheet:', sheet ? 'Yes' : 'No');
         
-        // Create new sheet if it doesn't exist
         if (!sheet) {
-            sheet = await doc.addSheet({ title: sheetTitle, headerValues: Object.values(SHEET_COLUMNS) });
-            console.log(`Created new sheet: ${sheetTitle}`);
+            console.log('Creating new sheet...');
+            sheet = await doc.addSheet({ 
+                title: sheetTitle,
+                headerValues: ['Date', 'Type', 'Amount', 'Description', 'Category', 'PaymentMode']
+            });
+            console.log('New sheet created');
         }
         
         return sheet;
@@ -971,3 +1103,116 @@ setInterval(async () => {
 
 client.login(process.env.DISCORD_TOKEN); // Login to Discord with your bot's token
 
+async function handleQuery(message) {
+    try {
+        // Get all transactions from sheet
+        const sheet = await getCurrentMonthSheet();
+        const rows = await sheet.getRows();
+        
+        // Convert sheet data to structured format
+        const transactions = rows.map(row => ({
+            date: row.Date,
+            type: row.Type,
+            amount: parseFloat(row.Amount),
+            category: row.Category,
+            paymentMode: row.PaymentMode,
+            description: row.Description
+        }));
+
+        // Create a prompt with all context
+        const prompt = `
+        You are a financial assistant analyzing transaction data.
+        Here are all transactions: ${JSON.stringify(transactions)}
+
+        User Query: "${message.content}"
+
+        Task:
+        1. Understand what user is asking about (spending, category, payment mode, time period)
+        2. Filter relevant transactions
+        3. Calculate the total
+        4. Provide a clear, concise response
+
+        For example, if user asks about "cash spent on trip", only sum transactions where:
+        - PaymentMode is "Cash"
+        - Category is "Trip"
+        - Amount is negative (expense)
+
+        Format amounts in INR with ₹ symbol.
+        `;
+
+        const response = await model.generateContent(prompt);
+        await message.channel.send(response.response.text());
+
+    } catch (error) {
+        console.error('Query error:', error);
+        message.channel.send('Error processing your query. Please try again.');
+    }
+}
+
+async function analyzeBudget() {
+    try {
+        const sheet = await getCurrentMonthSheet();
+        const rows = await sheet.getRows();
+        
+        const transactions = rows.map(row => ({
+            date: row.Date,
+            type: row.Type,
+            amount: parseFloat(row.Amount),
+            category: row.Category
+        }));
+
+        const prompt = `
+        Analyze budget status for these transactions:
+        ${JSON.stringify(transactions)}
+
+        Budget limits: ${JSON.stringify(MONTHLY_BUDGETS)}
+
+        Provide:
+        1. Categories approaching/exceeding budget
+        2. Spending trends
+        3. Recommendations for staying within budget
+        4. Areas of concern
+
+        Focus on actionable insights.
+        Use INR (₹) for amounts.
+        `;
+
+        const analysis = await model.generateContent(prompt);
+        return analysis.response.text();
+    } catch (error) {
+        console.error('Budget analysis error:', error);
+        throw error;
+    }
+}
+
+// Function to create expense embed with proper description
+function createExpenseEmbed(amount, description, category) {
+    return new Discord.MessageEmbed()
+        .setColor('#FF0000')
+        .setTitle('💸 New Expense')
+        .setDescription(`Expense Details:`)  // Added required description
+        .addFields(
+            { name: 'Amount', value: `₹${amount}`, inline: true },
+            { name: 'Description', value: description || 'No description', inline: true },
+            { name: 'Category', value: category || 'Uncategorized', inline: true }
+        )
+        .setTimestamp();
+}
+
+// Add with other schedules
+const monthEndReportJob = schedule.scheduleJob('0 20 L * *', async () => {
+    try {
+        const channel = await client.channels.fetch(process.env.REPORT_CHANNEL_ID);
+        const report = await generateMonthEndReport();
+        
+        const embed = new Discord.MessageEmbed()
+            .setColor('#0099ff')
+            .setTitle('📊 Month-End Financial Report')
+            .setDescription(report)
+            .setTimestamp();
+        
+        await channel.send({ embeds: [embed] });
+    } catch (error) {
+        logBot('ERROR', 'Failed to send month-end report', error);
+    }
+});
