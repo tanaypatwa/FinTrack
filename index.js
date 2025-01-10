@@ -242,7 +242,7 @@ async function getSpendingData(query) {
         const [period, category, payment] = analysis.response.text().trim().split('|');
 
         // Get transactions from sheet
-        const sheet = doc.sheetsByTitle['Transactions'];
+        const sheet = await getCurrentMonthSheet();
         const rows = await sheet.getRows();
         
         // Calculate date range
@@ -333,12 +333,11 @@ async function analyzeSpendingQuery(query, transactions) {
         Given this spending query: "${query}"
         And these transactions:
         ${JSON.stringify(transactionData, null, 2)}
-
+        You are a financial expert and you are helping me to analyze my spending from this data.
         Analyze the data and provide:
-        1. Direct answer to the query
-        2. Relevant spending patterns
-        3. Budget context if applicable
-        4. Brief financial insight or tip
+        1. Direct answer to the query accurately
+        2. Budget context if applicable
+        3. Brief financial insight or tip
 
         Note: All amounts are in INR (₹)
         Available categories: ${Object.values(CATEGORIES).join(', ')}
@@ -370,18 +369,6 @@ const SHEET_COLUMNS = {
     PAYMENT_MODE: 'PaymentMode'
 };
 
-// Use these in both income and expense logging
-async function logTransaction(type, amount, description, category, paymentMode) {
-    const sheet = await getCurrentMonthSheet();
-    await sheet.addRow({
-        [SHEET_COLUMNS.DATE]: new Date().toLocaleDateString('en-GB'),
-        [SHEET_COLUMNS.TRANSACTION_TYPE]: type,
-        [SHEET_COLUMNS.AMOUNT]: type === 'EXPENSE' ? -Math.abs(amount) : Math.abs(amount),
-        [SHEET_COLUMNS.DESCRIPTION]: description,
-        [SHEET_COLUMNS.CATEGORY]: category,
-        [SHEET_COLUMNS.PAYMENT_MODE]: paymentMode || 'N/A'
-    });
-}
 
 // Function to create new monthly sheet with standardized columns
 async function createMonthlySheet() {
@@ -433,6 +420,7 @@ async function logExpense(amount, description, category, paymentMode) {
         logBot('ERROR', 'Error logging expense', error);
         throw error;
     }
+    await checkBudgetStatus(channel, category);
 }
 
 // Function to log income
@@ -591,6 +579,7 @@ client.on('messageCreate', async message => {
         if (content.startsWith('!log')) {
             const expenseDetails = content.slice(4).trim();
             logBot('INFO', 'Processing expense', { expenseDetails });
+            
             
             if (!expenseDetails) {
                 await message.reply('Please provide expense details.');
@@ -751,7 +740,15 @@ client.on('messageCreate', async message => {
         // Handle spending queries
         else if (content.toLowerCase().includes('spent') || 
                  content.toLowerCase().includes('spending') || 
-                 content.toLowerCase().includes('how much')) {
+                 content.toLowerCase().includes('how much') ||
+                 content.toLowerCase().includes('what') ||
+                 content.toLowerCase().includes('total') ||
+                 content.toLowerCase().includes('expenses') ||
+                 content.toLowerCase().includes('cost') ||
+                 content.toLowerCase().includes('amount') ||
+                 content.toLowerCase().includes('expenditure') ||
+                 content.toLowerCase().includes('summary') ||
+                 content.toLowerCase().includes('overview')) {
             logBot('INFO', 'Processing spending query');
             const sheet = await getCurrentMonthSheet();
             const rows = await sheet.getRows();
@@ -808,7 +805,7 @@ function parseDate(dateStr) {
 // Add this function to check budget status
 async function checkBudgetStatus(channel, category) {
     try {
-        const sheet = doc.sheetsByTitle['Transactions'];
+        const sheet = await getCurrentMonthSheet();
         const rows = await sheet.getRows();
         
         // Get current month's transactions
@@ -925,7 +922,7 @@ async function handleTransaction(message, content) {
 
 async function sendDailyReport(channel) {
     try {
-        const sheet = doc.sheetsByTitle['Transactions'];
+        const sheet = await getCurrentMonthSheet();
         const rows = await sheet.getRows();
         
         // Get current month's transactions
@@ -1105,52 +1102,6 @@ setInterval(async () => {
 
 client.login(process.env.DISCORD_TOKEN); // Login to Discord with your bot's token
 
-async function handleQuery(message) {
-    try {
-        // Get all transactions from sheet
-        const sheet = await getCurrentMonthSheet();
-        const rows = await sheet.getRows();
-        
-        // Convert sheet data to structured format
-        const transactions = rows.map(row => ({
-            date: row.Date,
-            type: row.Type,
-            amount: parseFloat(row.Amount),
-            category: row.Category,
-            paymentMode: row.PaymentMode,
-            description: row.Description
-        }));
-
-        // Create a prompt with all context
-        const prompt = `
-        You are a financial assistant analyzing transaction data.
-        Here are all transactions: ${JSON.stringify(transactions)}
-
-        User Query: "${message.content}"
-
-        Task:
-        1. Understand what user is asking about (spending, category, payment mode, time period)
-        2. Filter relevant transactions
-        3. Calculate the total
-        4. Provide a clear, concise response
-
-        For example, if user asks about "cash spent on trip", only sum transactions where:
-        - PaymentMode is "Cash"
-        - Category is "Trip"
-        - Amount is negative (expense)
-
-        Format amounts in INR with ₹ symbol.
-        `;
-
-        const response = await model.generateContent(prompt);
-        await message.channel.send(response.response.text());
-
-    } catch (error) {
-        console.error('Query error:', error);
-        message.channel.send('Error processing your query. Please try again.');
-    }
-}
-
 async function analyzeBudget() {
     try {
         const sheet = await getCurrentMonthSheet();
@@ -1216,5 +1167,17 @@ const monthEndReportJob = schedule.scheduleJob('0 20 L * *', async () => {
         await channel.send({ embeds: [embed] });
     } catch (error) {
         logBot('ERROR', 'Failed to send month-end report', error);
+    }
+});
+
+// Schedule job for daily summary at 8 AM
+const dailySummaryJob = schedule.scheduleJob('0 19 * * *', async () => {
+    console.log('Sending daily summary...');
+    try {
+        const summaryEmbed = await generateSummaryReport(); // Call your existing summary function
+        const channel = await client.channels.fetch(process.env.REPORT_CHANNEL_ID); // Fetch the channel
+        await channel.send({ embeds: [summaryEmbed] }); // Send the summary
+    } catch (error) {
+        console.error('Error sending daily summary:', error);
     }
 });
