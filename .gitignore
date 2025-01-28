@@ -1,6 +1,11 @@
    # Ignore environment files
    .env
 
+   # Ignore video files
+   *.mp4
+   *.avi
+   *.mov
+
    # Ignore YAML files
    *.yaml
    *.yml
