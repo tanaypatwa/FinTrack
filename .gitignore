@@ -4,3 +4,45 @@
    # Ignore YAML files
    *.yaml
    *.yml
+
+   # Ignore node modules
+   node_modules/
+
+   # Ignore macOS store files
+   .DS_Store
+
+   # Ignore log files
+   *.log
+
+   # Ignore npm-debug log files
+   npm-debug.log*
+
+   # Ignore yarn-debug log files
+   yarn-debug.log*
+
+   # Ignore yarn-error log files
+   yarn-error.log*
+
+   # Ignore local environment files
+   .env.local
+
+   # Ignore local development environment files
+   .env.development.local
+
+   # Ignore local test environment files
+   .env.test.local
+
+   # Ignore local production environment files
+   .env.production.local
+
+   # Ignore vscode files
+   .vscode/
+
+   # Ignore idea files
+   .idea/
+
+   # Ignore swap files
+   *.swp
+
+   # Ignore source files
+   *.swo

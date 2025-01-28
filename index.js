@@ -18,27 +18,61 @@ async function performSheetOperation(operation) {
     }
 }
 
-// Initialize Discord client with required intents
-const { Client, GatewayIntentBits } = require('discord.js');
-
+// Initialize Discord client with required intents and proper error handling
 const client = new Discord.Client({
     intents: [
         Discord.Intents.FLAGS.GUILDS,
         Discord.Intents.FLAGS.GUILD_MESSAGES,
         Discord.Intents.FLAGS.GUILD_MESSAGE_REACTIONS
-    ]
+    ],
+    // Add proper connection handling options
+    restWsBridgeTimeout: 5000,
+    retryLimit: 3,
+    restTimeOffset: 750, // Add delay between API calls
+    failIfNotExists: false,
+    waitGuildTimeout: 15000
 });
+
+// Connection management variables
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const INITIAL_RECONNECT_DELAY = 5000;
+let reconnectTimeout = null;
 
 // Initialize Gemini
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-// Initialize bot and sheets
+// Enhanced connection management
+async function connectWithBackoff() {
+    try {
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            logBot('ERROR', `Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Waiting for manual intervention.`);
+            return;
+        }
+
+        const delay = INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectAttempts);
+        logBot('INFO', `Attempting to connect... Attempt ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS} (Delay: ${delay}ms)`);
+
+        await client.login(process.env.DISCORD_TOKEN);
+    } catch (error) {
+        logBot('ERROR', 'Connection failed', error);
+        reconnectAttempts++;
+        
+        // Clear any existing timeout
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        
+        // Schedule next reconnect attempt with exponential backoff
+        reconnectTimeout = setTimeout(connectWithBackoff, delay);
+    }
+}
+
+// Initialize bot with better error handling
 async function initializeBot() {
     try {
         logBot('INFO', 'Starting bot initialization');
         await setupGoogleSheet();
-        await client.login(process.env.DISCORD_TOKEN);
+        await connectWithBackoff();
         logBot('SUCCESS', 'Bot initialized successfully');
     } catch (error) {
         logBot('ERROR', 'Bot initialization failed', error);
@@ -48,7 +82,6 @@ async function initializeBot() {
 
 // Start the bot
 initializeBot();
-
 
 // Get or create current month's sheet
 async function getCurrentMonthSheet() {
@@ -83,11 +116,22 @@ async function getCurrentMonthSheet() {
     }
 }
 
-// Set up scheduled tasks
+// Update client event handlers
 client.once('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}!`);
+    reconnectAttempts = 0; // Reset counter on successful connection
+    logBot('INFO', `Logged in as ${client.user.tag}`);
     await setupGoogleSheet();
     logBot('INFO', 'Bot is online and sheets are ready!');
+});
+
+client.on('error', error => {
+    logBot('ERROR', 'Discord client error', error);
+    // Don't auto-reconnect here, let the connection manager handle it
+});
+
+client.on('disconnect', () => {
+    logBot('WARN', 'Bot disconnected from Discord');
+    // Don't auto-reconnect here, let the connection manager handle it
 });
 
 // Add these constants at the top of your file
@@ -160,23 +204,34 @@ async function setupGoogleSheet() {
     try {
         console.log('Starting Google Sheet setup...');
         
-        // Initialize the document
-        doc = new GoogleSpreadsheet('1Ua1cWUirWKVD8BBMJPY5hPTvY6eYTUUBKq4JlYMH6wA');
-        
-        // Authenticate
-        await doc.useServiceAccountAuth({
-            client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-            private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
-        });
-        
-        // Load document properties
-        await doc.loadInfo();
-        console.log('Successfully loaded doc:', doc.title);
-        
-        // Ensure the current month's sheet exists
-        await getCurrentMonthSheet();
-        
-        return true;
+        // Initialize the document with retries
+        let retries = 3;
+        while (retries > 0) {
+            try {
+                // Initialize the document
+                doc = new GoogleSpreadsheet('1Ua1cWUirWKVD8BBMJPY5hPTvY6eYTUUBKq4JlYMH6wA');
+                
+                // Authenticate
+                await doc.useServiceAccountAuth({
+                    client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+                    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
+                });
+                
+                // Load document properties
+                await doc.loadInfo();
+                console.log('Successfully loaded doc:', doc.title);
+                
+                // Ensure the current month's sheet exists
+                await getCurrentMonthSheet();
+                
+                return true;
+            } catch (error) {
+                retries--;
+                if (retries === 0) throw error;
+                console.log(`Retrying Google Sheet setup... ${retries} attempts remaining`);
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+            }
+        }
     } catch (error) {
         console.error('Google Sheet setup error:', error);
         return false;
@@ -769,18 +824,6 @@ client.on('messageCreate', async message => {
     }
 });
 
-// Make sure Discord client is properly initialized
-client.once('ready', async () => {
-    logBot('INFO', `Logged in as ${client.user.tag}`);
-    await setupGoogleSheet();
-    logBot('INFO', 'Bot is online and sheets are ready!');
-});
-
-// Error handler for client
-client.on('error', error => {
-    logBot('ERROR', 'Discord client error', error);
-});
-
 // Debug handler
 client.on('debug', info => {
     logBot('INFO', 'Discord debug', info);
@@ -1171,7 +1214,7 @@ const monthEndReportJob = schedule.scheduleJob('0 20 L * *', async () => {
 });
 
 // Schedule job for daily summary at 8 AM
-const dailySummaryJob = schedule.scheduleJob('0 19 * * *', async () => {
+const dailySummaryJob = schedule.scheduleJob('0 17 * * *', async () => {
     console.log('Sending daily summary...');
     try {
         const summaryEmbed = await generateSummaryReport(); // Call your existing summary function
