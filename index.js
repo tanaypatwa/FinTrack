@@ -1067,7 +1067,7 @@ async function generateMonthEndReport() {
         1. Total income vs expenses
         2. Category-wise spending analysis
         3. Budget adherence for each category
-        4. Areas of overspending
+        4. Areas of overspending (categories)
         5. Saving rate achieved
         6. Recommendations for next month's budget
         7. Specific areas for potential savings
