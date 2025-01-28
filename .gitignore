@@ -1,53 +1,38 @@
-   # Ignore environment files
-   .env
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-   # Ignore video files
-   *.mp4
-   *.avi
-   *.mov
+# Video files
+*.mp4
+*.avi
+*.mov
 
-   # Ignore YAML files
-   *.yaml
-   *.yml
+# YAML files
+*.yaml
+*.yml
 
-   # Ignore node modules
-   node_modules/
+# Dependencies
+node_modules/
 
-   # Ignore macOS store files
-   .DS_Store
+# OS files
+.DS_Store
 
-   # Ignore log files
-   *.log
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-   # Ignore npm-debug log files
-   npm-debug.log*
+# IDE files
+.vscode/
+.idea/
 
-   # Ignore yarn-debug log files
-   yarn-debug.log*
+# Temp files
+*.swp
+*.swo
 
-   # Ignore yarn-error log files
-   yarn-error.log*
-
-   # Ignore local environment files
-   .env.local
-
-   # Ignore local development environment files
-   .env.development.local
-
-   # Ignore local test environment files
-   .env.test.local
-
-   # Ignore local production environment files
-   .env.production.local
-
-   # Ignore vscode files
-   .vscode/
-
-   # Ignore idea files
-   .idea/
-
-   # Ignore swap files
-   *.swp
-
-   # Ignore source files
-   *.swo
+# Service account keys
+*.json
