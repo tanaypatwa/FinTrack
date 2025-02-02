@@ -66,7 +66,7 @@ Ask about your spending in natural language.
 ```
 
 ### 4. Budget Categories & Limits
-Monthly budgets for each category:
+Monthly budgets for each category: (UPDATED)
 ```
 Food            ₹4,000
 Health/medical  ₹3,000

@@ -5,7 +5,12 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 const port = process.env.PORT || 8080;
 const schedule = require('node-schedule');
 
+// Constants
+const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+// Global variables
 let isBotReady = false;
+let doc = null; // Google Sheets document instance
 
 // Wrapper function for sheet operations
 async function performSheetOperation(operation) {
@@ -86,30 +91,33 @@ initializeBot();
 // Get or create current month's sheet
 async function getCurrentMonthSheet() {
     try {
-        const date = new Date();
-        const sheetTitle = `${date.toLocaleString('default', { month: 'long' })} ${date.getFullYear()}`;
-        
+        const currentDate = new Date();
+        const sheetTitle = `${months[currentDate.getMonth()]} ${currentDate.getFullYear()}`;
         console.log('Attempting to access sheet:', sheetTitle);
-        
+
         // Ensure doc is initialized
         if (!doc) {
-            console.log('Doc not initialized, initializing...');
-            await initializeSheets();
+            console.log('Doc not initialized, setting up Google Sheet...');
+            await setupGoogleSheet();
         }
-        
+
+        // Ensure doc info is loaded
+        if (!doc.title) {
+            console.log('Loading doc info...');
+            await doc.loadInfo();
+        }
+
         let sheet = doc.sheetsByTitle[sheetTitle];
-        console.log('Found sheet:', sheet ? 'Yes' : 'No');
         
         if (!sheet) {
-            console.log('Creating new sheet...');
+            console.log('Creating new sheet for current month:', sheetTitle);
             sheet = await doc.addSheet({ 
                 title: sheetTitle,
-                headerValues: ['Date', 'Type', 'Amount', 'Description', 'Category', 'PaymentMode']
+                headerValues: ['Date', 'Amount', 'Description', 'Payment Mode', 'Category']
             });
-            console.log('New sheet created');
         }
-        
-        return sheet;   
+
+        return sheet;
     } catch (error) {
         console.error('Error in getCurrentMonthSheet:', error);
         throw error;
@@ -154,15 +162,15 @@ const PAYMENT_MODES = {
 };
 
 const MONTHLY_BUDGETS = {
-    FOOD: 4000,
+    FOOD: 5000,
     HEALTH: 3000,
     HOME: 500,
     TRANSPORT: 1500,
     PERSONAL: 4000,
     UTILITIES: 500,
     NSCI: 1500,
-    LEISURE: 2000,
-    TRIP: 10000
+    LEISURE: 3000,
+    TRIP: 0
 };
 
 const TOTAL_MONTHLY_BUDGET = Object.values(MONTHLY_BUDGETS).reduce((a, b) => a + b, 0);
@@ -202,36 +210,14 @@ function logBot(type, message, data = null) {
 // Initialize Google Sheets connection
 async function setupGoogleSheet() {
     try {
-        console.log('Starting Google Sheet setup...');
-        
-        // Initialize the document with retries
-        let retries = 3;
-        while (retries > 0) {
-            try {
-                // Initialize the document
-                doc = new GoogleSpreadsheet('1Ua1cWUirWKVD8BBMJPY5hPTvY6eYTUUBKq4JlYMH6wA');
-                
-                // Authenticate
-                await doc.useServiceAccountAuth({
-                    client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-                    private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
-                });
-                
-                // Load document properties
-                await doc.loadInfo();
-                console.log('Successfully loaded doc:', doc.title);
-                
-                // Ensure the current month's sheet exists
-                await getCurrentMonthSheet();
-                
-                return true;
-            } catch (error) {
-                retries--;
-                if (retries === 0) throw error;
-                console.log(`Retrying Google Sheet setup... ${retries} attempts remaining`);
-                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
-            }
-        }
+        doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEET_ID);
+        await doc.useServiceAccountAuth({
+            client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+            private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
+        });
+        await doc.loadInfo();
+        console.log('Google Sheets setup successful');
+        return true;
     } catch (error) {
         console.error('Google Sheet setup error:', error);
         return false;
@@ -450,32 +436,90 @@ async function createMonthlySheet() {
     }
 }
 
-// Function to log expense with better error handling
-async function logExpense(amount, description, category, paymentMode) {
+// Add budget monitoring function
+async function checkBudgetLimits(category, guild) {
     try {
-        // Validate amount
-        const parsedAmount = parseFloat(amount);
-        if (isNaN(parsedAmount)) {
-            throw new Error('Invalid amount provided');
-        }
-
         const sheet = await getCurrentMonthSheet();
-        await sheet.addRow({
-            [SHEET_COLUMNS.DATE]: new Date().toLocaleDateString('en-GB'),
-            [SHEET_COLUMNS.TRANSACTION_TYPE]: 'EXPENSE',
-            [SHEET_COLUMNS.AMOUNT]: `-${Math.abs(parsedAmount)}`,  // Ensure negative for expenses
-            [SHEET_COLUMNS.DESCRIPTION]: description || 'No description',
-            [SHEET_COLUMNS.CATEGORY]: category || 'Uncategorized',
-            [SHEET_COLUMNS.PAYMENT_MODE]: paymentMode || 'Cash'
+        const rows = await sheet.getRows();
+        
+        // Calculate total spent in this category
+        const totalSpent = rows
+            .filter(row => row.Category === category && row.Type === 'EXPENSE')
+            .reduce((sum, row) => sum + Math.abs(parseFloat(row.Amount) || 0), 0);
+        
+        // Get budget for this category
+        const categoryKey = Object.keys(CATEGORIES).find(key => CATEGORIES[key] === category);
+        const budget = MONTHLY_BUDGETS[categoryKey] || 0;
+        
+        if (budget === 0) return; // Skip if no budget set
+        
+        const spentPercentage = (totalSpent / budget) * 100;
+        
+        // Log for debugging
+        logBot('INFO', 'Budget check', {
+            category,
+            totalSpent,
+            budget,
+            spentPercentage
         });
         
-        logBot('SUCCESS', `Expense logged: ₹${parsedAmount} - ${description}`);
+        // Prepare alert message if over threshold
+        if (spentPercentage >= 80) {
+            const alertEmbed = new Discord.MessageEmbed()
+                .setColor(spentPercentage >= 100 ? '#ff0000' : '#ffa500')
+                .setTitle(`⚠️ Budget Alert: ${category}`)
+                .setDescription(
+                    `You have spent ${spentPercentage.toFixed(1)}% of your ${category} budget!\n\n` +
+                    `Budget: ₹${budget}\n` +
+                    `Spent: ₹${totalSpent.toFixed(2)}\n` +
+                    `Remaining: ₹${(budget - totalSpent).toFixed(2)}`
+                )
+                .setTimestamp();
+
+            // Find appropriate channel to send alert
+            const channel = guild.channels.cache
+                .find(channel => 
+                    channel.type === 'GUILD_TEXT' && 
+                    channel.permissionsFor(client.user).has('SEND_MESSAGES')
+                );
+            
+            if (channel) {
+                await channel.send({ embeds: [alertEmbed] });
+                logBot('INFO', `Sent budget alert for ${category}`, {
+                    spentPercentage,
+                    totalSpent,
+                    budget
+                });
+            }
+        }
+    } catch (error) {
+        logBot('ERROR', 'Error checking budget limits', error);
+    }
+}
+
+// Update the expense logging to include budget check
+async function logExpense(amount, description, paymentMode, category, message) {
+    try {
+        const sheet = await getCurrentMonthSheet();
+        const date = new Date().toLocaleDateString('en-IN');
+        
+        // Add the expense
+        await sheet.addRow({
+            Date: date,
+            Amount: amount,
+            Description: description,
+            PaymentMode: paymentMode,
+            Category: category
+        });
+        
+        // Check budget limits after logging expense
+        await checkBudgetLimits(category, message.guild);
+        
         return true;
     } catch (error) {
         logBot('ERROR', 'Error logging expense', error);
-        throw error;
+        return false;
     }
-    await checkBudgetStatus(channel, category);
 }
 
 // Function to log income
@@ -622,17 +666,102 @@ async function generateMonthlyReport() {
     }
 }
 
-// Updated message handler with better logging
+// Add this helper function to get exact data from sheets
+async function getSheetAnalysis(query) {
+    try {
+        const sheet = await getCurrentMonthSheet();
+        const rows = await sheet.getRows();
+        
+        // Create a structured data object
+        const data = {
+            totalsByCategory: {},
+            expensesByDate: {},
+            paymentModeStats: {},
+            rawTransactions: []
+        };
+
+        // Process each row
+        for (const row of rows) {
+            const amount = parseFloat(row.Amount) || 0;
+            const category = row.Category;
+            const date = row.Date;
+            const paymentMode = row.PaymentMode;
+
+            // Store raw transaction
+            data.rawTransactions.push({
+                date,
+                amount,
+                category,
+                paymentMode,
+                description: row.Description
+            });
+
+            // Update category totals
+            if (!data.totalsByCategory[category]) {
+                data.totalsByCategory[category] = 0;
+            }
+            data.totalsByCategory[category] += amount;
+
+            // Update date totals
+            if (!data.expensesByDate[date]) {
+                data.expensesByDate[date] = 0;
+            }
+            data.expensesByDate[date] += amount;
+
+            // Update payment mode stats
+            if (paymentMode) {
+                if (!data.paymentModeStats[paymentMode]) {
+                    data.paymentModeStats[paymentMode] = 0;
+                }
+                data.paymentModeStats[paymentMode] += amount;
+            }
+        }
+
+        // Create a detailed prompt for Gemini
+        const prompt = `
+        Analyze this financial data and answer the query: "${query}"
+        
+        Current Data:
+        1. Category Totals: ${JSON.stringify(data.totalsByCategory)}
+        2. Daily Totals: ${JSON.stringify(data.expensesByDate)}
+        3. Payment Methods: ${JSON.stringify(data.paymentModeStats)}
+        4. All Transactions: ${JSON.stringify(data.rawTransactions)}
+        5. Monthly Budgets: ${JSON.stringify(MONTHLY_BUDGETS)}
+
+        Rules for response:
+        1. Only use the exact numbers from the provided data
+        2. For category queries, match the exact category name
+        3. For date-based queries, ensure dates match exactly
+        4. Include the exact amount in your response
+        5. If data is not available, say so explicitly
+        6. Format all amounts with ₹ symbol
+        7. Round all numbers to 2 decimal places
+        8. If calculating percentage of budget, use the monthly budgets provided
+
+        Respond in this format:
+        1. Direct answer to the query: [exact number/analysis]
+        2. Budget context: [if relevant]
+        3. Brief insight: [one line insight based on data]
+        `;
+
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+    } catch (error) {
+        console.error('Error analyzing sheet data:', error);
+        return 'Sorry, I encountered an error while analyzing the data. Please try again.';
+    }
+}
+
+// Update the message handling to use the new analysis function
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
     
     try {
-        const content = message.content.trim();
-        logBot('INFO', 'Received message', { content });
-        
-        // Handle !log command (existing code)
-        if (content.startsWith('!log')) {
-            const expenseDetails = content.slice(4).trim();
+        // Log command for debugging
+        logBot('INFO', 'Received message', { content: message.content });
+
+        if (message.content.startsWith('!log')) {
+            const expenseDetails = message.content.slice(4).trim();
             logBot('INFO', 'Processing expense', { expenseDetails });
             
             
@@ -701,14 +830,21 @@ client.on('messageCreate', async message => {
                     try {
                         if (reaction.emoji.name === '✅') {
                             const sheet = await getCurrentMonthSheet();
+                            const date = new Date().toLocaleDateString('en-GB');
+                            const parsedAmount = Math.abs(parseFloat(amount));
+
+                            // Add the expense
                             await sheet.addRow({
-                                [SHEET_COLUMNS.DATE]: new Date().toLocaleDateString('en-GB'),
-                                [SHEET_COLUMNS.TRANSACTION_TYPE]: 'EXPENSE',
-                                [SHEET_COLUMNS.AMOUNT]: `-${Math.abs(parseFloat(amount))}`,
-                                [SHEET_COLUMNS.DESCRIPTION]: description,
-                                [SHEET_COLUMNS.CATEGORY]: category,
-                                [SHEET_COLUMNS.PAYMENT_MODE]: paymentMode
+                                Date: date,
+                                Type: 'EXPENSE',
+                                Amount: `-${parsedAmount}`,
+                                Description: description,
+                                Category: category,
+                                PaymentMode: paymentMode
                             });
+
+                            // Check budget limits immediately after logging
+                            await checkBudgetLimits(category, message.guild);
                             
                             await message.channel.send('✅ Expense logged successfully!');
                         } else if (reaction.emoji.name === '❌') {
@@ -726,11 +862,8 @@ client.on('messageCreate', async message => {
                 logBot('ERROR', 'Expense processing error', error);
                 await message.reply('Error processing expense. Please try again.');
             }
-        }
-        
-        // Handle !income command
-        else if (content.startsWith('!income')) {
-            const incomeDetails = content.slice(7).trim();
+        } else if (message.content.startsWith('!income')) {
+            const incomeDetails = message.content.slice(7).trim();
             logBot('INFO', 'Processing income', { incomeDetails });
             
             if (!incomeDetails) {
@@ -776,51 +909,45 @@ client.on('messageCreate', async message => {
                 logBot('ERROR', 'Income processing error', error);
                 await message.reply('Error processing income. Please try again.');
             }
-        }
-        
-        // Handle !summary command
-        else if (content === '!summary') {
+        } else if (message.content.toLowerCase().includes('how much') || 
+                  message.content.toLowerCase().includes('spent') ||
+                  message.content.toLowerCase().includes('show') ||
+                  message.content.toLowerCase().includes('tell me')) {
+            // Natural language query handling
+            const response = await getSheetAnalysis(message.content);
+            await message.reply(response);
+        } else if (message.content === '!summary') {
             logBot('INFO', 'Generating summary report');
             const summaryEmbed = await generateSummaryReport();
             await message.channel.send({ embeds: [summaryEmbed] });
-        }
-        
-        // Handle !report command
-        else if (content === '!report') {
+        } else if (message.content === '!report') {
             logBot('INFO', 'Generating monthly report');
             const report = await generateMonthlyReport();
             await message.channel.send(report);
-        }
-        
-        // Handle spending queries
-        else if (content.toLowerCase().includes('spent') || 
-                 content.toLowerCase().includes('spending') || 
-                 content.toLowerCase().includes('how much') ||
-                 content.toLowerCase().includes('what') ||
-                 content.toLowerCase().includes('total') ||
-                 content.toLowerCase().includes('expenses') ||
-                 content.toLowerCase().includes('cost') ||
-                 content.toLowerCase().includes('amount') ||
-                 content.toLowerCase().includes('expenditure') ||
-                 content.toLowerCase().includes('summary') ||
-                 content.toLowerCase().includes('overview')) {
+        } else if (message.content.toLowerCase().includes('spent') || 
+                 message.content.toLowerCase().includes('spending') || 
+                 message.content.toLowerCase().includes('how much') ||
+                 message.content.toLowerCase().includes('what') ||
+                 message.content.toLowerCase().includes('total') ||
+                 message.content.toLowerCase().includes('expenses') ||
+                 message.content.toLowerCase().includes('cost') ||
+                 message.content.toLowerCase().includes('amount') ||
+                 message.content.toLowerCase().includes('expenditure') ||
+                 message.content.toLowerCase().includes('summary') ||
+                 message.content.toLowerCase().includes('overview')) {
             logBot('INFO', 'Processing spending query');
             const sheet = await getCurrentMonthSheet();
             const rows = await sheet.getRows();
-            const analysis = await analyzeSpendingQuery(content, rows);
+            const analysis = await analyzeSpendingQuery(message.content, rows);
             await message.channel.send(analysis);
-        }
-        
-        // Handle budget analysis
-        else if (content === '!budget') {
+        } else if (message.content === '!budget') {
             logBot('INFO', 'Analyzing budget');
             const analysis = await analyzeBudget();
             await message.channel.send(analysis);
         }
-
     } catch (error) {
-        logBot('ERROR', 'Message processing error', error);
-        await message.reply('An error occurred. Please try again.');
+        logBot('ERROR', 'Error processing message', error);
+        await message.reply('Sorry, I encountered an error. Please try again.');
     }
 });
 
@@ -1084,64 +1211,43 @@ async function generateMonthEndReport() {
     }
 }
 
-// Helper to get current month's sheet
-async function getCurrentMonthSheet() {
+// Schedule month-end report
+schedule.scheduleJob('0 20 L * *', async () => {
     try {
-        const date = new Date();
-        const sheetTitle = `${date.toLocaleString('default', { month: 'long' })} ${date.getFullYear()}`;
-        
-        console.log('Attempting to access sheet:', sheetTitle);
-        
-        // Ensure doc is initialized
-        if (!doc) {
-            console.log('Doc not initialized, initializing...');
-            await initializeSheets();
-        }
-        
-        let sheet = doc.sheetsByTitle[sheetTitle];
-        console.log('Found sheet:', sheet ? 'Yes' : 'No');
-        
-        if (!sheet) {
-            console.log('Creating new sheet...');
-            sheet = await doc.addSheet({ 
-                title: sheetTitle,
-                headerValues: ['Date', 'Type', 'Amount', 'Description', 'Category', 'PaymentMode']
-            });
-            console.log('New sheet created');
-        }
-        
-        return sheet;
-    } catch (error) {
-        console.error('Error in getCurrentMonthSheet:', error);
-        throw error;
-    }
-}
-
-// Set up monthly sheet creation and report scheduling
-setInterval(async () => {
-    const now = new Date();
-    const isLastDayOfMonth = now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    
-    // Create next month's sheet at start of month
-    if (now.getDate() === 1 && now.getHours() === 0 && now.getMinutes() === 0) {
-        await createMonthlySheet();
-    }
-    
-    // Generate month-end report
-    if (isLastDayOfMonth && now.getHours() === 20 && now.getMinutes() === 0) { // 8 PM on last day
-        const channel = await client.channels.fetch(REPORT_CHANNEL_ID);
+        logBot('INFO', 'Generating scheduled month-end report');
         const report = await generateMonthEndReport();
-        await channel.send({
-            embeds: [{
-                color: '#0099ff',
-                title: '📊 Month-End Financial Report',
-                description: report
-
+        
+        // Send to all guilds the bot is in
+        for (const guild of client.guilds.cache.values()) {
+            try {
+                // Find the first text channel we can send to
+                const channel = guild.channels.cache
+                    .find(channel => 
+                        channel.type === 'GUILD_TEXT' && 
+                        channel.permissionsFor(client.user).has('SEND_MESSAGES')
+                    );
                 
-            }]
-        });
+                if (channel) {
+                    await channel.send({
+                        embeds: [{
+                            color: '#0099ff',
+                            title: '📊 Month-End Financial Report',
+                            description: report,
+                            footer: {
+                                text: `Generated on ${new Date().toLocaleDateString()}`
+                            }
+                        }]
+                    });
+                    logBot('SUCCESS', `Sent month-end report to ${guild.name}`);
+                }
+            } catch (error) {
+                logBot('ERROR', `Failed to send report to guild ${guild.name}`, error);
+            }
+        }
+    } catch (error) {
+        logBot('ERROR', 'Failed to generate month-end report', error);
     }
-}, 60000); // Check every minute
+});
 
 client.login(process.env.DISCORD_TOKEN); // Login to Discord with your bot's token
 
@@ -1194,24 +1300,6 @@ function createExpenseEmbed(amount, description, category) {
         )
         .setTimestamp();
 }
-
-// Add with other schedules
-const monthEndReportJob = schedule.scheduleJob('0 20 L * *', async () => {
-    try {
-        const channel = await client.channels.fetch(process.env.REPORT_CHANNEL_ID);
-        const report = await generateMonthEndReport();
-        
-        const embed = new Discord.MessageEmbed()
-            .setColor('#0099ff')
-            .setTitle('📊 Month-End Financial Report')
-            .setDescription(report)
-            .setTimestamp();
-        
-        await channel.send({ embeds: [embed] });
-    } catch (error) {
-        logBot('ERROR', 'Failed to send month-end report', error);
-    }
-});
 
 // Schedule job for daily summary at 8 AM
 const dailySummaryJob = schedule.scheduleJob('0 17 * * *', async () => {
