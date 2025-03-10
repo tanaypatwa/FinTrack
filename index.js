@@ -46,7 +46,7 @@ let reconnectTimeout = null;
 
 // Initialize Gemini
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
 // Enhanced connection management
 async function connectWithBackoff() {
