@@ -1,0 +1,67 @@
+[
+  {
+    "name": "FinTrack Telegram Bot - Master Workflow",
+    "nodes": [
+      {"id": 1, "name": "Telegram Trigger", "type": "n8n-nodes-base.telegramTrigger", "typeVersion": 1, "position": [250, 300], "parameters": {"token": "{{$secrets.TELEGRAM_API_KEY}}"}},
+      {"id": 2, "name": "Get User from Airtable", "type": "n8n-nodes-base.airtable", "typeVersion": 1, "position": [450, 300], "parameters": {"operation": "list", "baseId": "{{$secrets.AIRTABLE_BASE_ID}}", "tableId": "tblUsers", "options": {"filterByFormula": "{ChatID} = '{{$trigger.message.chat.id}}'"}}},
+      {"id": 3, "name": "IF New User", "type": "n8n-nodes-base.if", "typeVersion": 1, "position": [650, 300], "parameters": {"conditions": {"boolean": [{"value1": "{{$node['Get User from Airtable'].json.records.length}}", "operation": "equal", "value2": 0}]}}},
+      {"id": 4, "name": "Create User Record", "type": "n8n-nodes-base.airtable", "typeVersion": 1, "position": [850, 200], "parameters": {"operation": "create", "baseId": "{{$secrets.AIRTABLE_BASE_ID}}", "tableId": "tblUsers", "fieldsUi": {"fieldValues": [{"fieldName": "ChatID", "value": "{{$trigger.message.chat.id}}"}]}}},
+      {"id": 5, "name": "Code: Extract Budgets from README", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [1050, 200], "parameters": {"js": "return [ {category:'Food',limit:4000}, {category:'Health/medical',limit:3000}, {category:'Home expenses',limit:500}, {category:'Cabs/Petrol',limit:1500}, {category:'Personal',limit:4000}, {category:'Utilities',limit:500}, {category:'NSCI',limit:1500}, {category:'Party & Leisure',limit:2000}, {category:'Trip',limit:10000} ];"}},
+      {"id": 6, "name": "Loop Budgets", "type": "n8n-nodes-base.splitInBatches", "typeVersion": 1, "position": [1250, 200], "parameters": {"batchSize": 1}},
+      {"id": 7, "name": "Create Budget Records", "type": "n8n-nodes-base.airtable", "typeVersion": 1, "position": [1450, 200], "parameters": {"operation": "create", "baseId": "{{$secrets.AIRTABLE_BASE_ID}}", "tableId": "tblBudgets", "fieldsUi": {"fieldValues": [{"fieldName": "User", "value": "{{$node['Create User Record'].json.id}}"}, {"fieldName": "Category", "value": "{{$json.category}}"}, {"fieldName": "Limit", "value": "{{$json.limit}}"}]}}},
+      {"id": 8, "name": "Send Welcome Message", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [1650, 200], "parameters": {"chatId": "{{$trigger.message.chat.id}}", "text": "Welcome to FinTrack! I've set up your default budgets. Just tell me what you spent, like '500 for lunch', and I'll take care of it."}},
+      {"id": 9, "name": "AI Parse User Intent", "type": "n8n-nodes-base.openAi", "typeVersion": 1, "position": [850, 400], "parameters": {"model": "gpt-4-turbo", "prompt": "{{AI_PARSE_PROMPT}}", "options": {"response_format": {"type": "json_object"}}}},
+      {"id": 10, "name": "Switch on Intent", "type": "n8n-nodes-base.switch", "typeVersion": 1, "position": [1050, 400], "parameters": {"inputValue": "{{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).intent}}", "routingMode": "first", "rules": {"rules": [{"value": "log_transaction", "output": 0}, {"value": "query_data", "output": 1}]}}},
+      {"id": 11, "name": "Send Log Confirmation", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [1250, 300], "parameters": {"chatId": "{{$trigger.message.chat.id}}", "text": "📝 *New Transaction*\nAmount: ₹{{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.amount}}\nCategory: {{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.category}}\nPayment: {{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.payment_mode}}\nDescription: {{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.description}}\n\nPlease Confirm:", "parseMode": "MarkdownV2", "replyMarkup": "inlineKeyboard", "replyMarkupInline": {"inline_keyboard": [[{"text": "✅ Confirm", "callback_data": "confirm_log"}, {"text": "❌ Cancel", "callback_data": "cancel_log"}]]}}},
+      {"id": 12, "name": "Code: Build Airtable Filter", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [1250, 500], "parameters": {"js": "const data = JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content);\nconst userId = $node['Get User from Airtable'].json.records[0].id;\nconst cond = [`{User}='${userId}'`];\nif(data.entities.type) cond.push(`{Type}='${data.entities.type === 'income' ? 'Income' : 'Expense'}'`);\nif(data.entities.category) cond.push(`{Category}='${data.entities.category}'`);\nif(data.entities.time_period === 'today') cond.push('IS_SAME({Date}, TODAY(), \"day\")');\nif(data.entities.time_period === 'this month') cond.push('AND(MONTH({Date})=MONTH(TODAY()), YEAR({Date})=YEAR(TODAY()))');\nreturn {formula: `AND(${cond.join(',')})`};"}},
+      {"id": 13, "name": "Get Transactions from Airtable", "type": "n8n-nodes-base.airtable", "typeVersion": 1, "position": [1450, 500], "parameters": {"operation": "list", "baseId": "{{$secrets.AIRTABLE_BASE_ID}}", "tableId": "tblTransactions", "options": {"filterByFormula": "{{$node['Code: Build Airtable Filter'].json.formula}}"}}},
+      {"id": 14, "name": "Get Budgets for Context", "type": "n8n-nodes-base.airtable", "typeVersion": 1, "position": [1650, 500], "parameters": {"operation": "list", "baseId": "{{$secrets.AIRTABLE_BASE_ID}}", "tableId": "tblBudgets", "options": {"filterByFormula": "{User} = '{{$node['Get User from Airtable'].json.records[0].id}}'"}}},
+      {"id": 15, "name": "AI Generate Report", "type": "n8n-nodes-base.openAi", "typeVersion": 1, "position": [1850, 500], "parameters": {"model": "gpt-4-turbo", "prompt": "{{AI_INSIGHT_PROMPT}}"}},
+      {"id": 16, "name": "Send Report to User", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [2050, 500], "parameters": {"chatId": "{{$trigger.message.chat.id}}", "text": "{{$node['AI Generate Report'].json.choices[0].message.content}}", "parseMode": "MarkdownV2"}},
+      {"id": 17, "name": "Switch on Callback", "type": "n8n-nodes-base.switch", "typeVersion": 1, "position": [450, 600], "parameters": {"inputValue": "{{$trigger.callback_query.data}}", "routingMode": "first", "rules": {"rules": [{"value": "confirm_log", "output": 0}, {"value": "cancel_log", "output": 1}]}}},
+      {"id": 18, "name": "Create Transaction Record", "type": "n8n-nodes-base.airtable", "typeVersion": 1, "position": [650, 600], "parameters": {"operation": "create", "baseId": "{{$secrets.AIRTABLE_BASE_ID}}", "tableId": "tblTransactions", "fieldsUi": {"fieldValues": [{"fieldName": "User", "value": "{{$node['Get User from Airtable'].json.records[0].id}}"}, {"fieldName": "Date", "value": "{{$now}}"}, {"fieldName": "Type", "value": "{{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.type === 'income' ? 'Income' : 'Expense'}}"}, {"fieldName": "Amount", "value": "{{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.amount}}"}, {"fieldName": "Description", "value": "{{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.description}}"}, {"fieldName": "Category", "value": "{{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.category}}"}, {"fieldName": "PaymentMode", "value": "{{JSON.parse($node['AI Parse User Intent'].json.choices[0].message.content).entities.payment_mode}}"}]}}},
+      {"id": 19, "name": "Edit Confirmation Message (Success)", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [850, 600], "parameters": {"operation": "editMessage", "chatId": "{{$trigger.callback_query.message.chat.id}}", "messageId": "{{$trigger.callback_query.message.message_id}}", "text": "✅ Transaction logged successfully!"}},
+      {"id": 20, "name": "Edit Confirmation Message (Cancelled)", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [650, 800], "parameters": {"operation": "editMessage", "chatId": "{{$trigger.callback_query.message.chat.id}}", "messageId": "{{$trigger.callback_query.message.message_id}}", "text": "❌ Action cancelled."}}
+    ],
+    "connections": {
+      "Telegram Trigger": {"main": [[{"node": "Get User from Airtable", "type": "main", "index": 0}, {"node": "Switch on Callback", "type": "main", "index": 0}]]},
+      "Get User from Airtable": {"main": [[{"node": "IF New User", "type": "main", "index": 0}]]},
+      "IF New User": {"main": [[{"node": "Create User Record", "type": "main", "index": 0}], [{"node": "AI Parse User Intent", "type": "main", "index": 0}]]},
+      "Create User Record": {"main": [[{"node": "Code: Extract Budgets from README", "type": "main", "index": 0}]]},
+      "Code: Extract Budgets from README": {"main": [[{"node": "Loop Budgets", "type": "main", "index": 0}]]},
+      "Loop Budgets": {"main": [[{"node": "Create Budget Records", "type": "main", "index": 0}], [{"node": "Send Welcome Message", "type": "main", "index": 0}]]},
+      "Create Budget Records": {"main": [[{"node": "Loop Budgets", "type": "main", "index": 0}]]},
+      "AI Parse User Intent": {"main": [[{"node": "Switch on Intent", "type": "main", "index": 0}]]},
+      "Switch on Intent": {"main": [[{"node": "Send Log Confirmation", "type": "main", "index": 0}], [{"node": "Code: Build Airtable Filter", "type": "main", "index": 0}]]},
+      "Code: Build Airtable Filter": {"main": [[{"node": "Get Transactions from Airtable", "type": "main", "index": 0}]]},
+      "Get Transactions from Airtable": {"main": [[{"node": "Get Budgets for Context", "type": "main", "index": 0}]]},
+      "Get Budgets for Context": {"main": [[{"node": "AI Generate Report", "type": "main", "index": 0}]]},
+      "AI Generate Report": {"main": [[{"node": "Send Report to User", "type": "main", "index": 0}]]},
+      "Switch on Callback": {"main": [[{"node": "Create Transaction Record", "type": "main", "index": 0}], [{"node": "Edit Confirmation Message (Cancelled)", "type": "main", "index": 0}]]},
+      "Create Transaction Record": {"main": [[{"node": "Edit Confirmation Message (Success)", "type": "main", "index": 0}]]}
+    },
+    "active": true,
+    "settings": {}
+  },
+  {
+    "name": "FinTrack - Monthly Report Scheduler",
+    "nodes": [
+      {"id": 1, "name": "Cron", "type": "n8n-nodes-base.cron", "typeVersion": 1, "position": [250, 300], "parameters": {"rule": "0 10 L * *"}},
+      {"id": 2, "name": "Get All Users", "type": "n8n-nodes-base.airtable", "typeVersion": 1, "position": [450, 300], "parameters": {"operation": "list", "baseId": "{{$secrets.AIRTABLE_BASE_ID}}", "tableId": "tblUsers"}},
+      {"id": 3, "name": "SplitInBatches", "type": "n8n-nodes-base.splitInBatches", "typeVersion": 1, "position": [650, 300], "parameters": {"batchSize": 1}},
+      {"id": 4, "name": "Get User's Monthly Transactions", "type": "n8n-nodes-base.airtable", "typeVersion": 1, "position": [850, 300], "parameters": {"operation": "list", "baseId": "{{$secrets.AIRTABLE_BASE_ID}}", "tableId": "tblTransactions", "options": {"filterByFormula": "{User}='{{$json.id}}' , MONTH({Date})=MONTH(TODAY()), YEAR({Date})=YEAR(TODAY())"}}},
+      {"id": 5, "name": "Generate Monthly Report", "type": "n8n-nodes-base.openAi", "typeVersion": 1, "position": [1050, 300], "parameters": {"model": "gpt-4-turbo", "prompt": "{{AI_INSIGHT_PROMPT}}"}},
+      {"id": 6, "name": "Send Report to User", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [1250, 300], "parameters": {"chatId": "{{$json.fields.ChatID}}", "text": "{{$node['Generate Monthly Report'].json.choices[0].message.content}}", "parseMode": "MarkdownV2"}}
+    ],
+    "connections": {
+      "Cron": {"main": [[{"node": "Get All Users", "type": "main", "index": 0}]]},
+      "Get All Users": {"main": [[{"node": "SplitInBatches", "type": "main", "index": 0}]]},
+        "SplitInBatches": {"main": [[{"node": "Get User's Monthly Transactions", "type": "main", "index": 0}], []]},
+      "Get User's Monthly Transactions": {"main": [[{"node": "Generate Monthly Report", "type": "main", "index": 0}]]},
+      "Generate Monthly Report": {"main": [[{"node": "Send Report to User", "type": "main", "index": 0}]]},
+      "Send Report to User": {"main": [[{"node": "SplitInBatches", "type": "main", "index": 0}]]}
+    },
+    "active": true,
+    "settings": {}
+  }
+]

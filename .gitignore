@@ -36,3 +36,5 @@ yarn-error.log*
 
 # Service account keys
 *.json
+!fintrack_n8n_workflows.json
+
