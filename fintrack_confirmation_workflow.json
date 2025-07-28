@@ -1,0 +1,160 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        -420,
+        300
+      ],
+      "name": "Telegram Trigger"
+    },
+    {
+      "parameters": {
+        "propertyName": "callback",
+        "rules": [
+          {
+            "operation": "regex",
+            "value1": "={{$json.body.callback_query.data}}",
+            "value2": "^\\{"
+          }
+        ]
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        -180,
+        300
+      ],
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "functionCode": "const data = JSON.parse($node[\"Telegram Trigger\"].json.body.callback_query.data);\nreturn [{json: data}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        60,
+        220
+      ],
+      "name": "Parse Data"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": "FinTrackBase",
+        "table": "Transactions",
+        "fields": {
+          "User": "={{$json.userId}}",
+          "Date": "={{$json.date}}",
+          "Type": "={{$json.type}}",
+          "Amount": "={{$json.amount}}",
+          "Description": "={{$json.description}}",
+          "Category": "={{$json.category}}",
+          "PaymentMode": "={{$json.payment}}"
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        300,
+        220
+      ],
+      "name": "Create Transaction"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Telegram Trigger\"].json.body.callback_query.message.chat.id}}",
+        "messageId": "={{$node[\"Telegram Trigger\"].json.body.callback_query.message.message_id}}",
+        "text": "✅ Transaction logged successfully!",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        540,
+        220
+      ],
+      "name": "Edit Message"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Telegram Trigger\"].json.body.callback_query.message.chat.id}}",
+        "messageId": "={{$node[\"Telegram Trigger\"].json.body.callback_query.message.message_id}}",
+        "text": "❌ Action cancelled."
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        60,
+        380
+      ],
+      "name": "Cancel Message"
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Parse Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cancel Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Data": {
+      "main": [
+        [
+          {
+            "node": "Create Transaction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Transaction": {
+      "main": [
+        [
+          {
+            "node": "Edit Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  ],
+  "pinData": {},
+  "meta": {},
+  "id": "fintrack_confirmation_workflow"
+}
