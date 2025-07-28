@@ -1,0 +1,544 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        -600,
+        300
+      ],
+      "name": "Telegram Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": "FinTrackBase",
+        "table": "Users",
+        "returnAll": false,
+        "filterByFormula": "{ChatID}='={{$json.body.message.chat.id}}'"
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        -360,
+        300
+      ],
+      "name": "Find User"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "rules": [
+            {
+              "value1": "={{Object.keys($json).length}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        300
+      ],
+      "name": "User Exists?"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": "FinTrackBase",
+        "table": "Users",
+        "fields": {
+          "ChatID": "={{$json.body.message.chat.id}}",
+          "Username": "={{$json.body.message.from.username}}"
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        120,
+        180
+      ],
+      "name": "Create User"
+    },
+    {
+      "parameters": {
+        "items": [
+          {
+            "Category": "Food",
+            "Limit": 4000
+          },
+          {
+            "Category": "Health/medical",
+            "Limit": 3000
+          },
+          {
+            "Category": "Home expenses",
+            "Limit": 500
+          },
+          {
+            "Category": "Cabs/Petrol",
+            "Limit": 1500
+          },
+          {
+            "Category": "Personal",
+            "Limit": 4000
+          },
+          {
+            "Category": "Utilities",
+            "Limit": 500
+          },
+          {
+            "Category": "NSCI",
+            "Limit": 1500
+          },
+          {
+            "Category": "Party & Leisure",
+            "Limit": 2000
+          },
+          {
+            "Category": "Trip",
+            "Limit": 10000
+          }
+        ]
+      },
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [
+        120,
+        60
+      ],
+      "name": "Default Budgets"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": "FinTrackBase",
+        "table": "Budgets",
+        "fields": {
+          "User": "={{$node[\"Create User\"].json.id}}",
+          "Category": "={{$json.Category}}",
+          "Limit": "={{$json.Limit}}"
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        360,
+        60
+      ],
+      "name": "Create Default Budgets"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Telegram Trigger\"].json.body.message.chat.id}}",
+        "text": "Welcome to FinTrack! Send me your expenses or queries."
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        600,
+        60
+      ],
+      "name": "Send Welcome"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": "FinTrackBase",
+        "table": "ChatHistory",
+        "returnAll": false,
+        "limit": 10,
+        "sort": "Timestamp",
+        "additionalFields": {
+          "filterByFormula": "{User}='={{$node[\"Find User\"].json[0].id || $node[\"Create User\"].json.id}}'"
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        120,
+        420
+      ],
+      "name": "Get Chat History"
+    },
+    {
+      "parameters": {
+        "functionCode": "const history = items.map(i => ({role: i.json.Role, content: i.json.Content}));\nreturn [{json: {history}}];"
+      },
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        360,
+        420
+      ],
+      "name": "Format History"
+    },
+    {
+      "parameters": {
+        "systemPrompt": "You are FinTrack, a helpful and friendly finance tracking assistant. Your goal is to help users log transactions and understand their spending. Be concise and clear. All amounts are in Indian Rupees (₹).",
+        "memory": "={{$node[\"Format History\"].json.history}}",
+        "input": "={{$node[\"Telegram Trigger\"].json.body.message.text}}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1,
+      "position": [
+        600,
+        420
+      ],
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": "FinTrackBase",
+        "table": "Transactions"
+      },
+      "type": "n8n-nodes-base.airtableTool",
+      "typeVersion": 1,
+      "position": [
+        840,
+        240
+      ],
+      "name": "log_expense"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": "FinTrackBase",
+        "table": "Transactions"
+      },
+      "type": "n8n-nodes-base.airtableTool",
+      "typeVersion": 1,
+      "position": [
+        840,
+        300
+      ],
+      "name": "log_income"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": "FinTrackBase",
+        "table": "Transactions"
+      },
+      "type": "n8n-nodes-base.airtableTool",
+      "typeVersion": 1,
+      "position": [
+        840,
+        360
+      ],
+      "name": "query_transactions"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": "FinTrackBase",
+        "table": "Budgets"
+      },
+      "type": "n8n-nodes-base.airtableTool",
+      "typeVersion": 1,
+      "position": [
+        840,
+        420
+      ],
+      "name": "get_budgets"
+    },
+    {
+      "parameters": {
+        "propertyName": "output",
+        "rules": [
+          {
+            "operation": "contains",
+            "value1": "={{$json.output}}",
+            "value2": "\"confirmation_required\": true"
+          }
+        ]
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [
+        840,
+        480
+      ],
+      "name": "Check Agent Output"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Telegram Trigger\"].json.body.message.chat.id}}",
+        "text": "={{$json.output.text}}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ Confirm",
+                    "callback_data": "={{JSON.stringify($json.output.details)}}"
+                  },
+                  {
+                    "text": "❌ Cancel",
+                    "callback_data": "cancel"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        420
+      ],
+      "name": "Send Confirmation Prompt"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Telegram Trigger\"].json.body.message.chat.id}}",
+        "text": "={{$json.output}}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        540
+      ],
+      "name": "Send Agent Response"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": "FinTrackBase",
+        "table": "ChatHistory",
+        "fields": {
+          "User": "={{$node[\"Find User\"].json[0].id || $node[\"Create User\"].json.id}}",
+          "Role": "user",
+          "Content": "={{$node[\"Telegram Trigger\"].json.body.message.text}}"
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        500
+      ],
+      "name": "Save User Message"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": "FinTrackBase",
+        "table": "ChatHistory",
+        "fields": {
+          "User": "={{$node[\"Find User\"].json[0].id || $node[\"Create User\"].json.id}}",
+          "Role": "assistant",
+          "Content": "={{$node[\"Send Agent Response\"].json.message || $node[\"Send Confirmation Prompt\"].json.message}}"
+        }
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        620
+      ],
+      "name": "Save Bot Response"
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Find User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find User": {
+      "main": [
+        [
+          {
+            "node": "User Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "User Exists?": {
+      "main": [
+        [
+          {
+            "node": "Get Chat History",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create User": {
+      "main": [
+        [
+          {
+            "node": "Default Budgets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Budgets": {
+      "main": [
+        [
+          {
+            "node": "Create Default Budgets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Default Budgets": {
+      "main": [
+        [
+          {
+            "node": "Send Welcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Chat History": {
+      "main": [
+        [
+          {
+            "node": "Format History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format History": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Check Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "ai_tool": [
+        [
+          {
+            "node": "log_expense",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "log_income",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "query_transactions",
+            "type": "ai_tool",
+            "index": 0
+          },
+          {
+            "node": "get_budgets",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Agent Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Agent Response": {
+      "main": [
+        [
+          {
+            "node": "Save User Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation Prompt": {
+      "main": [
+        [
+          {
+            "node": "Save User Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save User Message": {
+      "main": [
+        [
+          {
+            "node": "Save Bot Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  ],
+  "pinData": {},
+  "meta": {},
+  "id": "fintrack_agent_workflow"
+}
